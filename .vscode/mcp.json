@@ -1,0 +1,36 @@
+{
+    "servers": {
+        "foundryIqKnowledgeBase": {
+            "type": "http",
+            "url": "https://{AZURE_AI_SEARCH_SERVICE_NAME}.search.windows.net/knowledgebases/contoso-company-kb-minimal/mcp?api-version=2026-05-01-preview",
+            "headers": {
+                "api-key": "${input:foundry-iq-key}"
+            }
+        },
+        "webIq": {
+            "type": "http",
+            "url": "https://api.microsoft.ai/v3/mcp",
+            "headers": {
+                "x-apikey": "${input:web-iq-key}"
+            }
+        },
+        "fabricIqOntology": {
+            "type": "http",
+            "url": "https://api.fabric.microsoft.com/v1/mcp/dataPlane/workspaces/{FABRIC_WORKSPACE_ID}/items/{FABRIC_ONTOLOGY_ID}/ontologyEndpoint"
+        }
+    },
+    "inputs": [
+        {
+            "type": "promptString",
+            "id": "foundry-iq-key",
+            "description": "Azure AI Search query key for the Foundry IQ knowledge base",
+            "password": true
+        },
+        {
+            "type": "promptString",
+            "id": "web-iq-key",
+            "description": "Web IQ API key (WEB_IQ_KEY)",
+            "password": true
+        }
+    ]
+}

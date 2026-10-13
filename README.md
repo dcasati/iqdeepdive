@@ -351,25 +351,47 @@ Endpoint notebooks, which skip the knowledge base and call a service endpoint di
 
 ### Configure local MCP servers
 
-The repository includes a `.mcp.json` file that registers the Fabric IQ ontology MCP server for local tool discovery. The checked-in URL uses placeholder values for the workspace and ontology IDs. After provisioning, replace the placeholder URL with the value written to your local `.env` file.
+The repository includes a `.vscode/mcp.json` file that registers these MCP servers for GitHub Copilot in VS Code. The workspace settings turn off MCP autostart, so start each server from **MCP: List Servers** after you configure it:
 
-On macOS or Linux, use the values from `.env` to replace the placeholders in `.mcp.json` in place:
+* `foundryIqKnowledgeBase` — the `contoso-company-kb-minimal` knowledge-base MCP endpoint.
+* `webIq` — the Web IQ MCP endpoint.
+* `fabricIqOntology` — the Fabric ontology MCP endpoint. Requires [Fabric IQ](#enable-fabric-iq).
+
+The Fabric endpoint supports MCP OAuth discovery, so VS Code signs you in with your Microsoft Entra account. The other two endpoints don't, so they authenticate with API-key headers. VS Code prompts for each key the first time a server starts and stores it securely:
+
+* `foundry-iq-key` — a read-only Azure AI Search query key. Get one with:
+
+  ```bash
+  az search query-key list \
+    --service-name "$(azd env get-value AZURE_AI_SEARCH_SERVICE_NAME)" \
+    --resource-group "$(azd env get-value AZURE_RESOURCE_GROUP)" \
+    --query "[0].key" -o tsv
+  ```
+
+* `web-iq-key` — the `WEB_IQ_KEY` value from your `.env` file.
+
+The checked-in URLs use `{AZURE_AI_SEARCH_SERVICE_NAME}`, `{FABRIC_WORKSPACE_ID}`, and `{FABRIC_ONTOLOGY_ID}` placeholders. After provisioning, replace them with the values from your local `.env` file.
+
+On macOS or Linux:
 
 ```bash
-WORKSPACE_ID=$(grep '^FABRIC_WORKSPACE_ID=' .env | sed "s/^FABRIC_WORKSPACE_ID='\(.*\)'/\1/")
-ONTOLOGY_ID=$(grep '^FABRIC_ONTOLOGY_ID=' .env | sed "s/^FABRIC_ONTOLOGY_ID='\(.*\)'/\1/")
-sed -i '' "s/{FABRIC_WORKSPACE_ID}/${WORKSPACE_ID}/g" .mcp.json
-sed -i '' "s/{FABRIC_ONTOLOGY_ID}/${ONTOLOGY_ID}/g" .mcp.json
+env_value() { grep "^$1=" .env | cut -d= -f2- | tr -d "'\""; }
+sed -i.bak \
+  -e "s/{AZURE_AI_SEARCH_SERVICE_NAME}/$(env_value AZURE_AI_SEARCH_SERVICE_NAME)/g" \
+  -e "s/{FABRIC_WORKSPACE_ID}/$(env_value FABRIC_WORKSPACE_ID)/g" \
+  -e "s/{FABRIC_ONTOLOGY_ID}/$(env_value FABRIC_ONTOLOGY_ID)/g" \
+  .vscode/mcp.json && rm .vscode/mcp.json.bak
 ```
 
-On Windows, use PowerShell to read `.env` and rewrite `.mcp.json`:
+On Windows, use PowerShell:
 
 ```powershell
-$workspaceId = (Get-Content .env | Where-Object { $_ -match "^FABRIC_WORKSPACE_ID='(.+)'" } | ForEach-Object { $matches[1] })
-$ontologyId = (Get-Content .env | Where-Object { $_ -match "^FABRIC_ONTOLOGY_ID='(.+)'" } | ForEach-Object { $matches[1] })
-$mcpJson = Get-Content .mcp.json | ConvertFrom-Json
-$mcpJson.mcpServers."fabric-iq-ontology".url = "https://api.fabric.microsoft.com/v1/mcp/dataPlane/workspaces/$workspaceId/items/$ontologyId/ontologyEndpoint"
-$mcpJson | ConvertTo-Json -Depth 4 | Set-Content .mcp.json
+function Get-EnvValue($name) { (Select-String -Path .env -Pattern "^$name=").Line -replace "^$name=", '' -replace "['`"]", '' }
+$mcpJson = Get-Content .vscode/mcp.json -Raw
+foreach ($name in 'AZURE_AI_SEARCH_SERVICE_NAME', 'FABRIC_WORKSPACE_ID', 'FABRIC_ONTOLOGY_ID') {
+    $mcpJson = $mcpJson -replace "\{$name\}", (Get-EnvValue $name)
+}
+Set-Content .vscode/mcp.json $mcpJson -NoNewline
 ```
 
 When you run a notebook, select the `.venv/bin/python` virtual environment.

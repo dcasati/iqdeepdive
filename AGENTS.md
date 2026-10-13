@@ -221,6 +221,13 @@ Ontology-specific instructions to preserve exact property names and projected al
 rejects attempts to add source examples with `Few shot examples are not supported for Ontology data sources`, so
 keep ontology guidance instruction-based unless that API capability changes.
 
+### GitHub Copilot MCP rendering
+
+When the published Fabric Data Agent MCP server is used directly from GitHub Copilot in VS Code, Copilot currently surfaces `structuredContent.deepLinkUrl` but does not render the natural-language
+answer from the standard `content` array. This is tracked by
+[microsoft/vscode#290063](https://github.com/microsoft/vscode/issues/290063). The notebook path
+(`notebooks/fabriciq-dataagent-mcp.ipynb`) reads `result.content` directly and is not affected.
+
 ## Upstream Agent Framework issues
 
 Keep these open Python hosting issues in mind when changing the Work IQ consent flow:
