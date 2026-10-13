@@ -4,60 +4,54 @@
 developer to run the Work IQ notebooks and the `workmate-agent` against your tenant's Microsoft 365
 work data.
 
-**Time**: ~5 minutes. **Result**: an **App ID** and **Tenant ID** for the developer's `.env`.
+**Time**: ~5 minutes. **Result**: a Work IQ Entra app that the notebooks sign in with and that Azure AI Search
+trusts through a federated credential.
 
 Work IQ always runs as the **signed-in user** and honors Microsoft 365 permissions and sensitivity
-labels. There is no application-only mode. Each user also needs a **Microsoft 365 Copilot license**
-(propagation takes 15–30 minutes).
+labels. There is no application-only mode. Work IQ usage is billed through **Copilot credits**: configure a
+usage-based billing plan in Copilot Studio and assign each user to it. Users on a **Microsoft 365 Copilot
+license** can also call the Work IQ gateway directly (propagation takes 15–30 minutes).
 
-## Azure CLI (step by step)
+## Create the app
+
+A Global Administrator enables the Work IQ API in the tenant once. Then run, as a Cloud Application
+Administrator or an identity with the Microsoft Graph application permissions `Application.ReadWrite.All`,
+`DelegatedPermissionGrant.ReadWrite.All`, and `Directory.Read.All`:
 
 ```bash
-# 1. Ensure the Work IQ service principal exists in your tenant (JIT provisioning).
-az ad sp create --id fdcc1f02-fc51-4226-8753-f668596af7f7
-
-# 2. Create the app registration as a single-tenant public client.
-APP_ID=$(az ad app create \
-  --display-name "Work IQ Deep Dive Client" \
-  --sign-in-audience AzureADMyOrg \
-  --is-fallback-public-client true \
-  --query appId -o tsv)
-echo "App ID: $APP_ID"
-
-# 3. Create the service principal for the app itself.
-az ad sp create --id $APP_ID
-
-# 4. Public-client redirect URIs (localhost browser + WAM broker on Windows).
-az ad app update --id $APP_ID \
-  --public-client-redirect-uris \
-    "http://localhost" \
-    "https://login.microsoftonline.com/common/oauth2/nativeclient" \
-    "ms-appx-web://microsoft.aad.brokerplugin/$APP_ID"
-
-# 5. Add the delegated Work IQ Gateway permission (WorkIQAgent.Ask).
-az ad app permission add --id $APP_ID \
-  --api fdcc1f02-fc51-4226-8753-f668596af7f7 \
-  --api-permissions "0b1715fd-f4bf-4c63-b16d-5be31f9847c2=Scope"
-
-# 6. Grant tenant-wide admin consent.
-az ad app permission admin-consent --id $APP_ID
-
-# Tenant ID for the developer.
-az account show --query tenantId -o tsv
+az ad sp create --id fdcc1f02-fc51-4226-8753-f668596af7f7   # Work IQ service principal, if missing
+uv run python infra/create-workiq-entra.py --apply
 ```
 
-Give the developer the **App ID** (step 2) and **Tenant ID** (step 6). They go into `.env` as
-`ENTRA_APP_ID` and `ENTRA_TENANT_ID`.
-
+The script creates a single-tenant public-client app that exposes `access_as_user`, grants tenant-wide admin
+consent for `WorkIQAgent.Ask`, adds the federated credential for the Azure AI Search managed identity, and
+writes `WORK_IQ_SEARCH_ENTRA_APP_ID`, `WORK_IQ_SEARCH_ENTRA_TENANT_ID`, and
+`WORK_IQ_SEARCH_FEDERATED_CREDENTIAL_ID` to `.env`. The `workiq-*` notebooks use the same app for sign-in
+when `ENTRA_APP_ID` is not set, so no separate app registration is needed.
 ## For the Foundry `work_iq_preview` tool connection
 
 The hosted `workmate-agent` connects to Work IQ through a Foundry **`RemoteA2A`** project
 connection targeting `https://workiq.svc.cloud.microsoft/a2a/`, `authType=OAuth2`, **BYO Entra app
 only** (scopes `WorkIQAgent.Ask` + `offline_access`). VNet-restricted Foundry projects are not
-supported. `infra/create-workiq-toolbox.py` (run by `azd up`'s postprovision hook) creates the
-Entra app, the `work-iq-connection` RemoteA2A connection, and the `work-iq-tools` toolbox — and
-grants the admin consent above automatically when run by a Global Administrator. See the
+supported. `infra/create-toolbox-workiq.py` (run by `azd up`'s postprovision hook) reuses the app above,
+adds a client secret and the Foundry callback URI to it, and creates the `work-iq-connection` RemoteA2A
+connection and the `work-iq-tools` toolbox. The secret goes straight to the connection and is not written to
+`.env`. Admin consent is already granted by `create-workiq-entra.py`. See the
 [Work IQ tool docs](https://learn.microsoft.com/azure/foundry/agents/how-to/tools/work-iq).
+
+If multiple projects share one Foundry resource, set `WORK_IQ_CONNECTION_NAME` to a unique value
+before provisioning because connection names are unique across the parent resource. Override
+`CUSTOM_FOUNDRY_WORKIQ_TOOLBOX_NAME` when the toolbox also needs an environment-specific name.
+
+## Which Entra app is which
+
+One Work IQ Entra app (created by `infra/create-workiq-entra.py`, `WORK_IQ_SEARCH_ENTRA_*`) serves every Work IQ path:
+
+| Path | How the app is used |
+|---|---|
+| `foundryiq-workiq.ipynb` | Azure AI Search calls Work IQ as the app through a federated credential (billed with Copilot credits) |
+| Direct `workiq-*` notebooks | Interactive sign-in for `api://<app>/access_as_user` |
+| `agent-toolbox-workiq`, `agent-workiq-maf` | The app's client secret backs the Foundry `RemoteA2A` OAuth2 connection |
 
 ## Troubleshooting
 

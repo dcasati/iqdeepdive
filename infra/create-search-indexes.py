@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 from typing import Any
 
+import requests
 from azure.core.exceptions import ResourceNotFoundError
 from azure.identity.aio import AzureDeveloperCliCredential
 from azure.search.documents.aio import SearchClient
@@ -21,7 +22,6 @@ from azure.search.documents.indexes.models import (
     SearchIndexFieldReference,
     SearchIndexKnowledgeSource,
     SearchIndexKnowledgeSourceParameters,
-    WorkIQKnowledgeSource,
 )
 from azure.search.documents.knowledgebases.models import (
     KnowledgeRetrievalLowReasoningEffort,
@@ -155,6 +155,31 @@ async def create_knowledge_base(
         print(f"Created knowledge base: {kb_name} with {len(source_refs)} knowledge sources")
 
 
+async def create_legacy_workiq_source(endpoint: str, credential: Any, source_name: str) -> None:
+    """Create a Work IQ source without Entra app auth for callers that only forward a Search user token.
+
+    Foundry Toolbox forwards only x-ms-query-source-authorization, so it cannot supply the
+    x-ms-query-work-iq-source-authorization assertion that EntraAppAuthentication requires. The current SDK
+    and API version require work_iq_parameters, so this source is created with the 2026-05-01-preview REST API.
+    """
+    token = (await credential.get_token("https://search.azure.com/.default")).token
+
+    def put_source() -> None:
+        response = requests.put(
+            f"{endpoint.rstrip('/')}/knowledgesources/{source_name}?api-version=2026-05-01-preview",
+            headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+            json={
+                "name": source_name,
+                "kind": "workIQ",
+                "description": "Microsoft 365 workplace context for the signed-in user.",
+            },
+            timeout=120,
+        )
+        response.raise_for_status()
+
+    await asyncio.to_thread(put_source)
+
+
 async def create_workiq_knowledge_base(
     endpoint: str,
     credential: Any,
@@ -164,15 +189,9 @@ async def create_workiq_knowledge_base(
     openai_model_name: str,
 ) -> None:
     """Create the Work IQ source and multi-source knowledge base used by the hosted agent."""
-    workiq_source_name = "workiq-knowledge-source"
+    workiq_source_name = "workiq-toolbox-knowledge-source"
+    await create_legacy_workiq_source(endpoint, credential, workiq_source_name)
     async with SearchIndexClient(endpoint=endpoint, credential=credential) as index_client:
-        await index_client.create_or_update_knowledge_source(
-            knowledge_source=WorkIQKnowledgeSource(
-                name=workiq_source_name,
-                description="Microsoft 365 workplace context for the signed-in user.",
-            )
-        )
-
         knowledge_base = KnowledgeBase(
             name=kb_name,
             description="Multi-source knowledge base combining indexed company documents and Work IQ.",

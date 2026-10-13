@@ -14,8 +14,10 @@ WORK_IQ_GATEWAY = os.environ.get("WORK_IQ_GATEWAY", "https://workiq.svc.cloud.mi
 WORK_IQ_SCOPE = os.environ.get(
     "WORK_IQ_SCOPE", "api://workiq.svc.cloud.microsoft/WorkIQAgent.Ask"
 )
-ENTRA_APP_ID = os.environ.get("ENTRA_APP_ID", "")
-ENTRA_TENANT_ID = os.environ.get("ENTRA_TENANT_ID", "common")
+ENTRA_APP_ID = os.environ.get("ENTRA_APP_ID") or os.environ.get("WORK_IQ_SEARCH_ENTRA_APP_ID", "")
+ENTRA_TENANT_ID = (
+    os.environ.get("ENTRA_TENANT_ID") or os.environ.get("WORK_IQ_SEARCH_ENTRA_TENANT_ID") or "common"
+)
 
 
 def get_user_token() -> str:
@@ -27,7 +29,9 @@ def get_user_token() -> str:
     from msal import PublicClientApplication, SerializableTokenCache
 
     if not ENTRA_APP_ID:
-        raise RuntimeError("Set ENTRA_APP_ID in .env — see docs/workiq-admin-setup.md")
+        raise RuntimeError(
+            "Set WORK_IQ_SEARCH_ENTRA_APP_ID (run infra/create-workiq-entra.py) — see docs/workiq-admin-setup.md"
+        )
 
     import tempfile
 
@@ -46,7 +50,21 @@ def get_user_token() -> str:
     accounts = app.get_accounts()
     result = app.acquire_token_silent(scopes, account=accounts[0]) if accounts else None
     if not result:
-        result = app.acquire_token_interactive(scopes)
+        if os.environ.get("CODESPACES") == "true":
+            # A browser pop-up is not available in GitHub Codespaces, so sign in with a device code.
+            flow = app.initiate_device_flow(scopes=scopes)
+            if "user_code" not in flow:
+                raise RuntimeError(f"Device flow failed: {flow.get('error_description', flow)}")
+            print(flow["message"])
+            try:
+                import webbrowser
+
+                webbrowser.open(f"{flow['verification_uri']}?otc={flow['user_code']}")
+            except Exception:
+                pass
+            result = app.acquire_token_by_device_flow(flow)
+        else:
+            result = app.acquire_token_interactive(scopes)
 
     if cache.has_state_changed:
         open(cache_path, "w").write(cache.serialize())
