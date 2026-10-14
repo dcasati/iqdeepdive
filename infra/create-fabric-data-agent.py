@@ -282,11 +282,6 @@ def attach_ontology(
     parts = get_item_definition(client, agent_url)
     draft_prefix = "Files/Config/draft/ontologies/"
     draft_ontologies = [part for part in parts if part["path"].startswith(draft_prefix)]
-    if [json.loads(decode_part(part))["artifactId"] for part in draft_ontologies] == [
-        ontology_id
-    ]:
-        print(f"Reusing ontology {ontology_id}.")
-        return
 
     ontology = request(
         client,
@@ -316,10 +311,17 @@ def attach_ontology(
         ],
         "entitiesWithUserAuthoredDescriptions": list(entities),
     }
+    ontology_path = f"{draft_prefix}{ontology['displayName']}/ontology.json"
+    if [(part["path"], json.loads(decode_part(part))) for part in draft_ontologies] == [
+        (ontology_path, ontology_config)
+    ]:
+        print(f"Reusing ontology {ontology_id}.")
+        return
+
     print(f"Attaching ontology '{ontology['displayName']}' {ontology_id}...")
     parts = [part for part in parts if part not in draft_ontologies] + [
         {
-            "path": f"{draft_prefix}{ontology['displayName']}/ontology.json",
+            "path": ontology_path,
             "payload": base64.b64encode(
                 json.dumps(ontology_config, indent=2).encode("utf-8")
             ).decode("ascii"),
