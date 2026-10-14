@@ -37,6 +37,7 @@ import uuid
 import warnings
 from collections.abc import Callable
 from datetime import datetime, timedelta
+from pathlib import Path
 
 import requests
 from azure.core.exceptions import HttpResponseError
@@ -812,376 +813,34 @@ def load_table(
         return False
 
 
-def create_definition_part(path: str, payload: dict) -> OntologyDefinitionPart:
-    """Create a Fabric item definition part with an inline base64 JSON payload."""
-    json_payload = json.dumps(payload, separators=(",", ":"))
-    encoded = base64.b64encode(json_payload.encode("utf-8")).decode("ascii")
-    return OntologyDefinitionPart(
-        path=path, payload=encoded, payload_type="InlineBase64"
-    )
-
-
-def make_entity_parts(
-    entity_id: int,
-    entity_name: str,
-    table_name: str,
-    columns: list[dict],
-    key_property: str,
-    display_property: str,
-    workspace_id: str,
-    lakehouse_id: str,
-) -> list[OntologyDefinitionPart]:
-    """Build ontology entity and lakehouse table binding definition parts."""
-    properties = []
-    property_bindings = []
-    for offset, column in enumerate(columns, start=1):
-        property_id = str(column.get("id", (entity_id * 100) + offset))
-        properties.append(
-            {
-                "id": property_id,
-                "name": column["name"],
-                "valueType": column["type"],
-            }
-        )
-        property_bindings.append(
-            {
-                "sourceColumnName": column["source"],
-                "targetPropertyId": property_id,
-            }
-        )
-
-    property_ids = {prop["name"]: prop["id"] for prop in properties}
-    definition = {
-        "id": str(entity_id),
-        "namespace": "usertypes",
-        "baseEntityTypeId": None,
-        "name": entity_name,
-        "entityIdParts": [property_ids[key_property]],
-        "displayNamePropertyId": property_ids[display_property],
-        "namespaceType": "Custom",
-        "visibility": "Visible",
-        "properties": properties,
-        "timeseriesProperties": [],
-    }
-    binding_id = str(uuid.uuid4())
-    binding = {
-        "id": binding_id,
-        "dataBindingConfiguration": {
-            "dataBindingType": "NonTimeSeries",
-            "timestampColumnName": None,
-            "propertyBindings": property_bindings,
-            "sourceTableProperties": {
-                "sourceType": "LakehouseTable",
-                "workspaceId": workspace_id,
-                "itemId": lakehouse_id,
-                "sourceTableName": table_name,
-            },
-        },
-    }
-    return [
-        create_definition_part(f"EntityTypes/{entity_id}/definition.json", definition),
-        create_definition_part(
-            f"EntityTypes/{entity_id}/DataBindings/{binding_id}.json", binding
-        ),
-    ]
-
-
-def make_relationship_parts(
-    relationship_id: int,
-    relationship_name: str,
-    source_entity_id: int,
-    source_column: str,
-    source_property_id: str,
-    target_entity_id: int,
-    target_column: str,
-    target_property_id: str,
-    table_name: str,
-    workspace_id: str,
-    lakehouse_id: str,
-) -> list[OntologyDefinitionPart]:
-    """Build an ontology relationship type and its lakehouse contextualization."""
-    definition = {
-        "namespace": "usertypes",
-        "id": str(relationship_id),
-        "name": relationship_name,
-        "namespaceType": "Custom",
-        "source": {"entityTypeId": str(source_entity_id)},
-        "target": {"entityTypeId": str(target_entity_id)},
-    }
-    contextualization_id = str(uuid.uuid4())
-    contextualization = {
-        "id": contextualization_id,
-        "dataBindingTable": {
-            "workspaceId": workspace_id,
-            "itemId": lakehouse_id,
-            "sourceTableName": table_name,
-            "sourceType": "LakehouseTable",
-        },
-        "sourceKeyRefBindings": [
-            {
-                "sourceColumnName": source_column,
-                "targetPropertyId": source_property_id,
-            }
-        ],
-        "targetKeyRefBindings": [
-            {
-                "sourceColumnName": target_column,
-                "targetPropertyId": target_property_id,
-            }
-        ],
-    }
-    return [
-        create_definition_part(
-            f"RelationshipTypes/{relationship_id}/definition.json", definition
-        ),
-        create_definition_part(
-            f"RelationshipTypes/{relationship_id}/Contextualizations/"
-            f"{contextualization_id}.json",
-            contextualization,
-        ),
-    ]
+ONTOLOGY_DEFINITION_ROOT = Path(REPO_ROOT) / "data/ontologies/contoso-diy"
 
 
 def build_contoso_ontology_definition(
     workspace_id: str, lakehouse_id: str
 ) -> OntologyDefinition:
-    """Build a Fabric IQ ontology definition for the Contoso DIY lakehouse tables."""
-    parts = [
-        create_definition_part(
-            ".platform",
-            {"metadata": {"type": "Ontology", "displayName": FABRIC_ONTOLOGY_NAME}},
-        ),
-        create_definition_part("definition.json", {}),
-    ]
-
-    # Ontology property names must be identifier-safe; source maps to lakehouse column names.
-    entity_specs = [
-        (
-            1001,
-            "Product",
-            "products",
-            [
-                {"name": "sku", "source": "sku", "type": "String"},
-                {"name": "name", "source": "name", "type": "String"},
-                {"name": "category", "source": "category", "type": "String"},
-                {"name": "productType", "source": "product_type", "type": "String"},
-                {"name": "price", "source": "price", "type": "Double"},
-                {"name": "description", "source": "description", "type": "String"},
-                {
-                    "id": 100108,
-                    "name": "imagePath",
-                    "source": "image_path",
-                    "type": "String",
-                },
-                {
-                    "id": 100109,
-                    "name": "seasonalMultipliers",
-                    "source": "seasonal_multipliers",
-                    "type": "String",
-                },
-            ],
-            "sku",
-            "name",
-        ),
-        (
-            1002,
-            "Category",
-            "categories",
-            [
-                {"name": "categoryName", "source": "category_name", "type": "String"},
-                {"name": "multiplierJan", "source": "multiplier_jan", "type": "Double"},
-                {"name": "multiplierFeb", "source": "multiplier_feb", "type": "Double"},
-                {"name": "multiplierMar", "source": "multiplier_mar", "type": "Double"},
-                {"name": "multiplierApr", "source": "multiplier_apr", "type": "Double"},
-                {"name": "multiplierMay", "source": "multiplier_may", "type": "Double"},
-                {"name": "multiplierJun", "source": "multiplier_jun", "type": "Double"},
-                {"name": "multiplierJul", "source": "multiplier_jul", "type": "Double"},
-                {"name": "multiplierAug", "source": "multiplier_aug", "type": "Double"},
-                {"name": "multiplierSep", "source": "multiplier_sep", "type": "Double"},
-                {"name": "multiplierOct", "source": "multiplier_oct", "type": "Double"},
-                {"name": "multiplierNov", "source": "multiplier_nov", "type": "Double"},
-                {"name": "multiplierDec", "source": "multiplier_dec", "type": "Double"},
-            ],
-            "categoryName",
-            "categoryName",
-        ),
-        (
-            1003,
-            "Store",
-            "stores",
-            [
-                {"name": "storeName", "source": "store_name", "type": "String"},
-                {"name": "rlsUserId", "source": "rls_user_id", "type": "String"},
-                {
-                    "name": "customerDistributionWeight",
-                    "source": "customer_distribution_weight",
-                    "type": "Double",
-                },
-                {
-                    "name": "orderFrequencyMultiplier",
-                    "source": "order_frequency_multiplier",
-                    "type": "Double",
-                },
-                {
-                    "name": "orderValueMultiplier",
-                    "source": "order_value_multiplier",
-                    "type": "Double",
-                },
-                {"name": "storeId", "source": "store_id", "type": "String"},
-                {"name": "city", "source": "city", "type": "String"},
-                {"name": "state", "source": "state", "type": "String"},
-                {"name": "region", "source": "region", "type": "String"},
-                {"name": "storeType", "source": "store_type", "type": "String"},
-            ],
-            "storeId",
-            "storeName",
-        ),
-        (
-            1005,
-            "Inventory",
-            "inventory",
-            [
-                {
-                    "name": "inventoryId",
-                    "source": "inventory_id",
-                    "type": "String",
-                },
-                {"name": "storeId", "source": "store_id", "type": "String"},
-                {"name": "sku", "source": "sku", "type": "String"},
-                {
-                    "name": "quantityOnHand",
-                    "source": "quantity_on_hand",
-                    "type": "BigInt",
-                },
-                {
-                    "name": "quantityReserved",
-                    "source": "quantity_reserved",
-                    "type": "BigInt",
-                },
-                {
-                    "name": "availableQuantity",
-                    "source": "available_quantity",
-                    "type": "BigInt",
-                },
-                {
-                    "name": "reorderPoint",
-                    "source": "reorder_point",
-                    "type": "BigInt",
-                },
-                {
-                    "name": "reorderQuantity",
-                    "source": "reorder_quantity",
-                    "type": "BigInt",
-                },
-                {
-                    "name": "lastRestockedAt",
-                    "source": "last_restocked_at",
-                    "type": "DateTime",
-                },
-            ],
-            "inventoryId",
-            "inventoryId",
-        ),
-        (
-            1006,
-            "Supplier",
-            "suppliers",
-            [
-                {
-                    "name": "supplierId",
-                    "source": "supplier_id",
-                    "type": "String",
-                },
-                {
-                    "name": "supplierName",
-                    "source": "supplier_name",
-                    "type": "String",
-                },
-                {
-                    "name": "contactEmail",
-                    "source": "contact_email",
-                    "type": "String",
-                },
-                {
-                    "name": "leadTimeDays",
-                    "source": "lead_time_days",
-                    "type": "BigInt",
-                },
-                {
-                    "name": "reliabilityRating",
-                    "source": "reliability_rating",
-                    "type": "Double",
-                },
-            ],
-            "supplierId",
-            "supplierName",
-        ),
-    ]
-
-    for spec in entity_specs:
-        parts.extend(make_entity_parts(*spec, workspace_id, lakehouse_id))
-
-    parts.extend(
-        make_relationship_parts(
-            relationship_id=2001,
-            relationship_name="contains",
-            source_entity_id=1002,
-            source_column="category",
-            source_property_id="100201",
-            target_entity_id=1001,
-            target_column="sku",
-            target_property_id="100101",
-            table_name="products",
-            workspace_id=workspace_id,
-            lakehouse_id=lakehouse_id,
+    """Bind the source-controlled TMDL ontology definition to the lakehouse."""
+    replacements = {
+        "{{WORKSPACE_ID}}": workspace_id,
+        "{{LAKEHOUSE_ID}}": lakehouse_id,
+    }
+    parts = []
+    for path in sorted(ONTOLOGY_DEFINITION_ROOT.rglob("*.tmdl")):
+        relative_path = path.relative_to(ONTOLOGY_DEFINITION_ROOT).as_posix()
+        content = path.read_text()
+        for marker, value in replacements.items():
+            content = content.replace(marker, value)
+        if "{{" in content or "}}" in content:
+            raise ValueError(f"Unresolved definition marker in {relative_path}.")
+        parts.append(
+            OntologyDefinitionPart(
+                path=relative_path,
+                payload=base64.b64encode(content.encode("utf-8")).decode("ascii"),
+                payload_type="InlineBase64",
+            )
         )
-    )
-    parts.extend(
-        make_relationship_parts(
-            relationship_id=2002,
-            relationship_name="holds",
-            source_entity_id=1003,
-            source_column="store_id",
-            source_property_id="100306",
-            target_entity_id=1005,
-            target_column="inventory_id",
-            target_property_id="100501",
-            table_name="inventory",
-            workspace_id=workspace_id,
-            lakehouse_id=lakehouse_id,
-        )
-    )
-    parts.extend(
-        make_relationship_parts(
-            relationship_id=2003,
-            relationship_name="recordsStockFor",
-            source_entity_id=1005,
-            source_column="inventory_id",
-            source_property_id="100501",
-            target_entity_id=1001,
-            target_column="sku",
-            target_property_id="100101",
-            table_name="inventory",
-            workspace_id=workspace_id,
-            lakehouse_id=lakehouse_id,
-        )
-    )
-    parts.extend(
-        make_relationship_parts(
-            relationship_id=2004,
-            relationship_name="supplies",
-            source_entity_id=1006,
-            source_column="supplier_id",
-            source_property_id="100601",
-            target_entity_id=1001,
-            target_column="sku",
-            target_property_id="100101",
-            table_name="product_suppliers",
-            workspace_id=workspace_id,
-            lakehouse_id=lakehouse_id,
-        )
-    )
-
+    if not parts:
+        raise RuntimeError(f"No ontology TMDL files found in {ONTOLOGY_DEFINITION_ROOT}.")
     return OntologyDefinition(parts=parts)
 
 
@@ -1246,23 +905,28 @@ def update_ontology_definition(
 ) -> bool:
     """Replace the ontology definition with Contoso DIY lakehouse entity bindings."""
     log_message("Updating ontology definition with Contoso DIY entity bindings...")
+    client = get_fabric_client()
+    definition = build_contoso_ontology_definition(workspace_id, lakehouse_id)
     try:
-        get_fabric_client().ontology.items.begin_update_ontology_definition(
+        client.ontology.items.begin_update_ontology_definition(
             workspace_id,
             ontology_id,
-            UpdateOntologyDefinitionRequest(
-                definition=build_contoso_ontology_definition(
-                    workspace_id, lakehouse_id
-                )
-            ),
+            UpdateOntologyDefinitionRequest(definition=definition),
             update_metadata=False,
         ).result()
-        return True
     except HttpResponseError as error:
         log_message(
             f"ERROR: Failed to update ontology definition: {error}"
         )
         return False
+    stored = client.ontology.items.get_ontology_definition(workspace_id, ontology_id)
+    missing = {part.path for part in definition.parts} - {
+        part.path for part in stored.definition.parts
+    }
+    if missing:
+        log_message(f"ERROR: Ontology definition is missing parts: {sorted(missing)}")
+        return False
+    return True
 
 
 def main():

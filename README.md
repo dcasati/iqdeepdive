@@ -195,8 +195,7 @@ azd env set ENABLE_FABRIC_ITEMS true
 azd provision
 ```
 
-To skip Fabric entirely, leave both flags unset. Set `FABRIC_ONTOLOGY_ID` and `FABRIC_GRAPH_ID` in `.env`
-before running the Fabric IQ notebooks when you manage those items separately.
+To skip Fabric entirely, leave both flags unset.
 
 The Fabric Data Agent is published over three complementary sources. The ontology owns product, category,
 supplier, store, and inventory facts; the product review graph owns reviewers, reviews, features, and

@@ -1,6 +1,9 @@
 """Create and publish a Fabric data agent backed by Contoso Fabric IQ sources."""
 
+import base64
+import json
 import os
+import re
 import time
 from pathlib import Path
 
@@ -20,13 +23,6 @@ facts. Use the review graph for reviewers, reviews, products, product features, 
 sentiment, and relationship traversals. Join ontology and graph results by product SKU when a
 question requires both operational and customer-review context.
 """
-ONTOLOGY_DESCRIPTION = (
-    "Contoso DIY product catalog, categories, suppliers, stores, and current inventory."
-)
-ONTOLOGY_INSTRUCTIONS = """Generate Fabric Ontology GQL. Property names are case-sensitive.
-When sorting a projected expression, use its RETURN alias exactly; never invent a different
-capitalization. Inventory uses quantityOnHand and availableQuantity. Product uses sku and name.
-Store HOLDS Inventory, and Inventory RECORDS_STOCK_FOR Product."""
 GRAPH_DESCRIPTION = (
     "Contoso DIY product reviews, reviewers, product features, feature-level sentiment, "
     "and relationships between products, reviews, reviewers, and features."
@@ -229,6 +225,117 @@ def add_fabric_item_datasource(
     wait_for_operation(client, response)
 
 
+def get_item_definition(client: httpx.Client, item_url: str) -> list[dict]:
+    """Return the definition parts of a Fabric item, waiting for the operation if needed."""
+    response = request(
+        client,
+        "POST",
+        f"{item_url}/getDefinition",
+        expected_statuses={httpx.codes.OK, httpx.codes.ACCEPTED},
+    )
+    if response.status_code == httpx.codes.ACCEPTED:
+        wait_for_operation(client, response)
+        response = request(
+            client,
+            "GET",
+            f"{response.headers['Location']}/result",
+            expected_statuses={httpx.codes.OK},
+        )
+    return response.json()["definition"]["parts"]
+
+
+def decode_part(part: dict) -> str:
+    """Decode an inline base64 definition part."""
+    return base64.b64decode(part["payload"]).decode("utf-8")
+
+
+def get_ontology_entities(
+    client: httpx.Client, workspace_id: str, ontology_id: str
+) -> dict[str, list[str]]:
+    """Return each ontology entity's property names from its TMDL definition."""
+    parts = get_item_definition(
+        client, f"/v1/workspaces/{workspace_id}/ontologies/{ontology_id}"
+    )
+    entities = {}
+    for part in parts:
+        if not part["path"].startswith("entities/"):
+            continue
+        text = decode_part(part)
+        entity = re.search(r"^entity (\S+)", text, re.MULTILINE)
+        if entity:
+            entities[entity.group(1)] = re.findall(
+                r"^\tproperty (\S+)", text, re.MULTILINE
+            )
+    if not entities:
+        raise RuntimeError(f"Ontology {ontology_id} has no TMDL entities.")
+    return entities
+
+
+def attach_ontology(
+    client: httpx.Client,
+    workspace_id: str,
+    data_agent_id: str,
+    ontology_id: str,
+) -> None:
+    """Attach the ontology through the definition, since the datasources API blocks ontologies."""
+    agent_url = f"/v1/workspaces/{workspace_id}/dataAgents/{data_agent_id}"
+    parts = get_item_definition(client, agent_url)
+    draft_prefix = "Files/Config/draft/ontologies/"
+    draft_ontologies = [part for part in parts if part["path"].startswith(draft_prefix)]
+    if [json.loads(decode_part(part))["artifactId"] for part in draft_ontologies] == [
+        ontology_id
+    ]:
+        print(f"Reusing ontology {ontology_id}.")
+        return
+
+    ontology = request(
+        client,
+        "GET",
+        f"/v1/workspaces/{workspace_id}/ontologies/{ontology_id}",
+        expected_statuses={httpx.codes.OK},
+    ).json()
+    entities = get_ontology_entities(client, workspace_id, ontology_id)
+    ontology_config = {
+        "$schema": (
+            "https://developer.microsoft.com/json-schemas/fabric/item/dataAgent/"
+            "definition/ontology/1.0.0/schema.json"
+        ),
+        "artifactId": ontology_id,
+        "workspaceId": workspace_id,
+        "displayName": ontology["displayName"],
+        "elements": [
+            {
+                "id": name,
+                "is_selected": True,
+                "display_name": name,
+                "type": "ontology.entity",
+                "description": ",".join(properties),
+                "children": [],
+            }
+            for name, properties in entities.items()
+        ],
+        "entitiesWithUserAuthoredDescriptions": list(entities),
+    }
+    print(f"Attaching ontology '{ontology['displayName']}' {ontology_id}...")
+    parts = [part for part in parts if part not in draft_ontologies] + [
+        {
+            "path": f"{draft_prefix}{ontology['displayName']}/ontology.json",
+            "payload": base64.b64encode(
+                json.dumps(ontology_config, indent=2).encode("utf-8")
+            ).decode("ascii"),
+            "payloadType": "InlineBase64",
+        }
+    ]
+    response = request(
+        client,
+        "POST",
+        f"{agent_url}/updateDefinition",
+        expected_statuses={httpx.codes.OK, httpx.codes.ACCEPTED},
+        json={"definition": {"parts": parts}},
+    )
+    wait_for_operation(client, response)
+
+
 def get_staging_datasource(
     client: httpx.Client,
     base_url: str,
@@ -377,13 +484,6 @@ def main() -> None:
             client,
             base_url,
             workspace_id,
-            ontology_id,
-            "ontology",
-        )
-        add_fabric_item_datasource(
-            client,
-            base_url,
-            workspace_id,
             graph_id,
             "review graph",
         )
@@ -398,21 +498,13 @@ def main() -> None:
         configure_datasource(
             client,
             base_url,
-            ontology_id,
-            "ontology",
-            ONTOLOGY_DESCRIPTION,
-            ONTOLOGY_INSTRUCTIONS,
-            {},
-        )
-        configure_datasource(
-            client,
-            base_url,
             graph_id,
             "Graph",
             GRAPH_DESCRIPTION,
             GRAPH_INSTRUCTIONS,
             GRAPH_FEWSHOTS,
         )
+        attach_ontology(client, workspace_id, data_agent_id, ontology_id)
 
         print("Publishing the Fabric data agent...")
         publish_response = request(

@@ -53,6 +53,7 @@ Fabric API. Provisioning creates or updates the TMDL and PBIR definitions by dis
 - `data/index-data/`: exported Search indexes and index metadata restored during provisioning.
 - `data/semantic-models/web-analytics/`: source-controlled TMDL definition for the Direct Lake web analytics
   semantic model.
+- `data/ontologies/contoso-diy/`: source-controlled TMDL definition for the Contoso DIY Fabric IQ ontology.
 - `data/reports/web-analytics/`: source-controlled enhanced PBIR definition for the web analytics Power BI report.
 - `infra/main.bicep`: subscription-scope entry point. Creates the resource group and composes Foundry, Search,
   storage, monitoring, and optional Fabric modules.
@@ -66,8 +67,8 @@ Fabric API. Provisioning creates or updates the TMDL and PBIR definitions by dis
 - `infra/create-fabric-graph.py`: creates or updates the lakehouse-backed product review Graph Model, refreshes
   its queryable data, and writes its ID and Fabric portal URL to `.env`.
 - `infra/create-fabric-data-agent.py`: creates or reuses an ontology-, Graph-, and semantic-model-backed Fabric
-  Data Agent, selects the semantic model tables, publishes its staging configuration through the Fabric REST API,
-  and writes its ID and MCP endpoint to `.env`.
+  Data Agent, selects the semantic model tables, attaches the ontology through the Data Agent definition,
+  publishes its staging configuration through the Fabric REST API, and writes its ID and MCP endpoint to `.env`.
 - `infra/create-web-analytics-lakehouse.py`: creates a separate lakehouse and loads deterministic website session,
   page-view, and dimensional data.
 - `infra/create-semantic-model.py`: binds the source-controlled TMDL model to the web analytics lakehouse SQL
@@ -80,7 +81,8 @@ Fabric API. Provisioning creates or updates the TMDL and PBIR definitions by dis
 - `infra/create-toolbox-workiq.py`: opt-in Graph SDK setup that reuses the shared Work IQ Entra app
   (`WORK_IQ_SEARCH_ENTRA_APP_ID`) when present, adds delegated consent, a client secret and the callback URI,
   creates the OAuth2 `RemoteA2A` connection, and publishes the separate Work IQ toolbox.
-- `infra/create-lakehouse.py`: creates optional Fabric lakehouse and ontology resources.
+- `infra/create-lakehouse.py`: creates the optional Fabric lakehouse, loads its tables, and binds the
+  source-controlled ontology TMDL to it.
 - `infra/setup-env.py`: writes generated Azure outputs to the local `.env` used by notebooks and local agent runs.
 - `infra/hooks/postprovision.sh` and `infra/hooks/postprovision.ps1`: run after infrastructure provisioning to
   write local settings, seed Search, and optionally prepare Fabric.
@@ -89,7 +91,7 @@ Fabric API. Provisioning creates or updates the TMDL and PBIR definitions by dis
 - `notebooks/fabriciq-dataagent-mcp.ipynb`: authenticates to the published Fabric Data Agent MCP endpoint, lists
   its tools, and submits a question through the selected tool.
 - `notebooks/fabriciq-ontology-mcp.ipynb`: authenticates to the Fabric ontology MCP endpoint, lists its tools, and
-  queries product and inventory data through `search_ontology`.
+  asks product and inventory questions through `ask_ontology`.
 - `notebooks/foundryiq-mcp.ipynb`: authenticates to the minimal Azure AI Search knowledge-base MCP endpoint,
   lists its tool schema, and retrieves extractive HR and benefits passages through `knowledge_base_retrieve`.
 - `notebooks/`: the six ordered Foundry IQ lab notebooks. Their extra kernel dependencies are listed in
@@ -196,7 +198,25 @@ The split is consistent and worth checking before adding a call: `begin_create_*
 while `begin_load_table` and every `begin_update_*_definition` return real `LROPoller` objects where `.result()`
 is correct. Verify with `inspect.getsource`, not the type hints, which are wrong for the extractor cases.
 
-## Open Fabric Data Agent issue
+## Fabric IQ ontology (TMDL definition)
+
+`infra/create-lakehouse.py` replaces an empty ontology's definition with the TMDL files in
+`data/ontologies/contoso-diy/` ([format reference](https://learn.microsoft.com/rest/api/fabric/articles/item-management/definitions/ontology-definition)),
+substituting `{{WORKSPACE_ID}}` and `{{LAKEHOUSE_ID}}` in `expressions.tmdl`. Keep LF line endings and the
+existing lineage tags: without them, Fabric assigns random tags on create and every later update fails with
+"relationship ... refers to an object which cannot be found". Column `dataType` values must match the Delta types
+that Load Table infers from the CSVs.
+
+The ontology MCP endpoint exposes `ask_ontology` (`{"request": ...}`), `list_ontology_entities`, and
+`list_ontology_rules`; `search_ontology` is not supported. `ask_ontology` takes 30 to 60 seconds, and past about
+60 seconds returns an empty `200 OK` that the MCP client cannot parse, so always pass `read_timeout_seconds`.
+
+Data Agents reject ontologies as staging datasources (`OntologyAddAsDataSourceBlocked`).
+`create-fabric-data-agent.py` instead writes `Files/Config/draft/ontologies/{displayName}/ontology.json` through
+`updateDefinition`; that part has no instructions field, so ontology guidance belongs in `aiInstructions`. If the
+published agent says it cannot access the ontology right after setup, open the agent in the Fabric portal and retry.
+
+## Open Fabric Data Agent issues
 
 Fabric Data Agent NL2GQL can generate Cypher-style `WHERE` clauses for Fabric Graph queries, but the Fabric Graph
 GQL endpoint requires `FILTER`. For example, a generated negative-sentiment review query timed out with `WHERE`,
@@ -212,14 +232,7 @@ few-shot queries did not resolve either Graph question. Diagnostics confirmed th
 the predicate-free question, and guided NL2GQL to a valid query. The exact generated query succeeded through the
 Graph REST endpoint, but the Data Agent's `analyze.database.execute` step failed with `Failed to execute GQL: Unable
 to process the request` (RAID `bc80ee4e-8fc0-4fd0-b47f-8035b54c2c64`). Until the Graph integration is fixed, use
-direct Graph GQL for review questions and ontology-backed questions for Data Agent demonstrations.
-
-Ontology NL2GQL can also generate an invalid `ORDER BY` identifier even when it selects the correct source and
-properties. One inventory query projected `quantityOnHand AS quantity_on_hand` but sorted by the undefined
-`quantity_onHand`, failing with internal code `42000` and RAID `615b7b72-a632-4622-9c4c-65dcb2ed02db`.
-Ontology-specific instructions to preserve exact property names and projected aliases repaired the query. Fabric
-rejects attempts to add source examples with `Few shot examples are not supported for Ontology data sources`, so
-keep ontology guidance instruction-based unless that API capability changes.
+direct Graph GQL for review questions.
 
 ### GitHub Copilot MCP rendering
 
